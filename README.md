@@ -2,8 +2,7 @@
 
 A simple content casting server based on P2P network.
 
-This is a demo project, just for testing the idea.
-If the demo is successful, it will be rewritten using C++ for better performance.
+We decide to use Rust to implement it.
 
 ## Idea
 
