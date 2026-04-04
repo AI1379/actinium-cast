@@ -198,3 +198,10 @@ Testing/
 # Added by cargo
 
 /target
+
+# SQLite database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
