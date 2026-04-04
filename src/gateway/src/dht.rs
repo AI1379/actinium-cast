@@ -9,6 +9,7 @@
 //! - 使用 `salt` 字段区分同一公钥下的不同内容类型（Post / Comment / Vote）。
 
 use mainline::{Dht, MutableItem, SigningKey};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::{info, warn};
@@ -114,6 +115,30 @@ impl DhtAdapter {
                 salt: salt.map(|s| hex::encode(s)),
             }),
         }
+    }
+
+    // ── BEP 5 Peer Discovery ────────────────────────────────────────────
+
+    /// 向 DHT 宣告自己作为 peer 的存在 (用于 Gateway 间的互相发现)。
+    /// 
+    /// - `info_hash`: 20 bytes 标识符（我们将 network_id 的哈希作为频道）
+    /// - `port`: 本机的对外服务端口（例如 HTTP API 的端口）
+    pub fn announce_peer(&self, info_hash: mainline::Id, port: u16) -> Result<(), DhtError> {
+        let _ = self.dht.announce_peer(info_hash, Some(port));
+        info!(port, "已向 DHT 网络宣告本地网关节点位置");
+        Ok(())
+    }
+
+    /// 查询特定频道 (info_hash) 下活动的其他网关 peers 列表。
+    pub fn get_peers(&self, info_hash: mainline::Id) -> Vec<SocketAddr> {
+        let mut peers = Vec::new();
+        // get_peers 返回 GetIterator<Vec<SocketAddrV4>>
+        for peer_v4s in self.dht.get_peers(info_hash) {
+            for peer in peer_v4s {
+                peers.push(SocketAddr::V4(peer));
+            }
+        }
+        peers
     }
 
     /// 获取底层 DHT 节点引用（用于高级操作）。

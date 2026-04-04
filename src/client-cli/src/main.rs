@@ -277,9 +277,9 @@ fn resolve_identity(secret_key: Option<&str>) -> Identity {
 fn cmd_post(gw: &GatewayClient, difficulty: u8, title: &str, content: &str, secret_key: Option<&str>, network_id: &[u8; NETWORK_ID_LEN]) {
     let identity = resolve_identity(secret_key);
     println!("⛏️  正在计算 PoW (difficulty={difficulty})...");
-    let hex = EnvelopeBuilder::build_post(&identity, title, content, difficulty, network_id);
+    let result = EnvelopeBuilder::build_post(&identity, title, content, difficulty, network_id);
     println!("📤 正在发布帖子...");
-    match gw.publish("/api/publish/post", &hex) {
+    match gw.publish("/api/publish/post", &result.envelope_hex, Some(&result.bep44_sig_hex)) {
         Ok((status, body)) => {
             if body["ok"] == true {
                 println!("✅ 帖子发布成功! id={}", body["data"]["id"]);
@@ -294,9 +294,9 @@ fn cmd_post(gw: &GatewayClient, difficulty: u8, title: &str, content: &str, secr
 fn cmd_comment(gw: &GatewayClient, difficulty: u8, post_id: &str, content: &str, secret_key: Option<&str>, network_id: &[u8; NETWORK_ID_LEN]) {
     let identity = resolve_identity(secret_key);
     println!("⛏️  正在计算 PoW (difficulty={difficulty})...");
-    let hex = EnvelopeBuilder::build_comment(&identity, post_id, content, difficulty, network_id);
+    let result = EnvelopeBuilder::build_comment(&identity, post_id, content, difficulty, network_id);
     println!("📤 正在发布评论...");
-    match gw.publish("/api/publish/comment", &hex) {
+    match gw.publish("/api/publish/comment", &result.envelope_hex, Some(&result.bep44_sig_hex)) {
         Ok((status, body)) => {
             if body["ok"] == true {
                 println!("✅ 评论发布成功! id={}", body["data"]["id"]);
@@ -312,9 +312,9 @@ fn cmd_vote(gw: &GatewayClient, difficulty: u8, target_id: &str, positive: bool,
     let identity = resolve_identity(secret_key);
     let label = if positive { "👍 点赞" } else { "👎 取消点赞" };
     println!("⛏️  正在计算 PoW (difficulty={difficulty})...");
-    let hex = EnvelopeBuilder::build_vote(&identity, target_id, positive, difficulty, network_id);
+    let result = EnvelopeBuilder::build_vote(&identity, target_id, positive, difficulty, network_id);
     println!("📤 正在发布{label}...");
-    match gw.publish("/api/publish/vote", &hex) {
+    match gw.publish("/api/publish/vote", &result.envelope_hex, Some(&result.bep44_sig_hex)) {
         Ok((status, body)) => {
             if body["ok"] == true {
                 println!("✅ {label}发布成功! id={}", body["data"]["id"]);
@@ -433,14 +433,14 @@ fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8, network_id: &[u8; NETWORK_
 
     // ── 2. Alice 发布帖子 ──
     println!("\n📝 步骤 2: Alice 发布帖子...");
-    let post_hex = EnvelopeBuilder::build_post(
+    let post_result = EnvelopeBuilder::build_post(
         &alice,
         "冒烟测试帖子",
         "这是 Actinium Cast 的端对端冒烟测试 🎉",
         difficulty,
         network_id,
     );
-    let (status, body) = gw.publish("/api/publish/post", &post_hex)
+    let (status, body) = gw.publish("/api/publish/post", &post_result.envelope_hex, Some(&post_result.bep44_sig_hex))
         .expect("发布帖子请求失败");
     check!("帖子发布成功", status == 200 && body["ok"] == true);
     let post_id = body["data"]["id"].as_i64().unwrap_or(-1);
@@ -468,17 +468,17 @@ fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8, network_id: &[u8; NETWORK_
 
     // ── 5. Bob 发布评论 ──
     println!("\n💬 步骤 5: Bob 发布评论...");
-    let comment_hex = EnvelopeBuilder::build_comment(
+    let comment_result = EnvelopeBuilder::build_comment(
         &bob, &alice_pk, "非常棒的帖子！", difficulty, network_id,
     );
-    let (status, body) = gw.publish("/api/publish/comment", &comment_hex)
+    let (status, body) = gw.publish("/api/publish/comment", &comment_result.envelope_hex, Some(&comment_result.bep44_sig_hex))
         .expect("发布评论失败");
     check!("评论发布成功", status == 200 && body["ok"] == true);
 
     // ── 6. Bob 对 Alice 的帖子点赞 ──
     println!("\n👍 步骤 6: Bob 点赞...");
-    let vote_hex = EnvelopeBuilder::build_vote(&bob, &alice_pk, true, difficulty, network_id);
-    let (status, body) = gw.publish("/api/publish/vote", &vote_hex)
+    let vote_result = EnvelopeBuilder::build_vote(&bob, &alice_pk, true, difficulty, network_id);
+    let (status, body) = gw.publish("/api/publish/vote", &vote_result.envelope_hex, Some(&vote_result.bep44_sig_hex))
         .expect("发布投票失败");
     check!("投票发布成功", status == 200 && body["ok"] == true);
 
@@ -497,23 +497,24 @@ fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8, network_id: &[u8; NETWORK_
     println!("\n🛡️ 步骤 8: 验证安全过滤...");
 
     // 8a. 无效 hex
-    let (status, body) = gw.publish("/api/publish/post", "not_valid_hex!!!")
+    let (status, body) = gw.publish("/api/publish/post", "not_valid_hex!!!", None)
         .expect("请求应成功发送");
     check!("无效 hex 被拒绝 (400)", status == 400 && body["ok"] == false);
 
     // 8b. 合法 hex 但无效 bencode
-    let (status, body) = gw.publish("/api/publish/post", "aabbccdd")
+    let (status, body) = gw.publish("/api/publish/post", "aabbccdd", None)
         .expect("请求应成功发送");
     check!("无效 bencode 被拒绝 (400)", status == 400 && body["ok"] == false);
 
     // 8c. 篡改数据
-    let mut tampered = EnvelopeBuilder::build_post(
+    let tampered_result = EnvelopeBuilder::build_post(
         &alice, "篡改测试", "这条消息会被篡改", difficulty, network_id,
     );
-    let len = tampered.len();
-    let last = u8::from_str_radix(&tampered[len - 2..], 16).unwrap_or(0);
-    tampered.replace_range(len - 2.., &format!("{:02x}", last ^ 0xFF));
-    let (status, body) = gw.publish("/api/publish/post", &tampered)
+    let mut tampered_hex = tampered_result.envelope_hex;
+    let len = tampered_hex.len();
+    let last = u8::from_str_radix(&tampered_hex[len - 2..], 16).unwrap_or(0);
+    tampered_hex.replace_range(len - 2.., &format!("{:02x}", last ^ 0xFF));
+    let (status, body) = gw.publish("/api/publish/post", &tampered_hex, None)
         .expect("请求应成功发送");
     check!(
         "篡改数据被拒绝 (400/403)",

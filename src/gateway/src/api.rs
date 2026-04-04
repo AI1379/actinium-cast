@@ -14,6 +14,7 @@
 //! | POST   | `/api/publish/comment`             | 提交并广播一条评论     |
 //! | POST   | `/api/publish/vote`                | 提交并广播一条投票     |
 //! | GET    | `/api/status`                      | 网关状态               |
+//! | GET    | `/api/sync/messages`               | (P2P Mesh) 获取增量数据 |
 
 use axum::{
     Json, Router,
@@ -147,8 +148,9 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/api/publish/post", post(publish_post))
         .route("/api/publish/comment", post(publish_comment))
         .route("/api/publish/vote", post(publish_vote))
-        // 状态路由
+        // 状态与同步路由
         .route("/api/status", get(status))
+        .route("/api/sync/messages", get(sync_messages))
         .layer(cors)
         .with_state(state)
 }
@@ -313,6 +315,53 @@ async fn status(State(state): State<SharedState>) -> impl IntoResponse {
         total_votes,
         dht_connected: state.dht.is_some(),
     }))
+}
+
+// ─── P2P 同步逻辑 ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SyncParams {
+    pub since_id: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyncMessageDto {
+    pub id: i64,
+    pub msg_type: String,
+    pub public_key: String,
+    pub timestamp: i64,
+    pub envelope_hex: String,
+}
+
+/// GET /api/sync/messages — 获取增量原始消息（供其他网关拉取）
+async fn sync_messages(
+    State(state): State<SharedState>,
+    Query(params): Query<SyncParams>,
+) -> impl IntoResponse {
+    let since_id = params.since_id.unwrap_or(0);
+    let limit = params.limit.unwrap_or(100).min(500); // 每次最多同步 500 条
+
+    match state.cache.list_all_messages_since(since_id, limit) {
+        Ok(messages) => {
+            let dtos: Vec<SyncMessageDto> = messages
+                .into_iter()
+                .map(|msg| SyncMessageDto {
+                    id: msg.id,
+                    msg_type: msg.msg_type,
+                    public_key: msg.public_key,
+                    timestamp: msg.timestamp,
+                    envelope_hex: hex::encode(msg.bencode_data),
+                })
+                .collect();
+            Json(ApiResponse::success(dtos)).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::<()>::error(format!("同步查询失败: {e}"))),
+        )
+            .into_response(),
+    }
 }
 
 // ─── 通用发布逻辑 ────────────────────────────────────────────────────────────

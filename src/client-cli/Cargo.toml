@@ -10,6 +10,9 @@ actinium-core = { path = "../core" }
 # ── CLI 框架 ──
 clap = { version = "4", features = ["derive"] }
 
+# ── DHT (用于 BEP 44 签名) ──
+mainline = "6"
+
 # ── HTTP 客户端 ──
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 

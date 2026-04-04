@@ -14,7 +14,7 @@
 
 use rusqlite::{params, Connection};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::info;
 
@@ -72,10 +72,10 @@ pub struct CachedMessage {
 
 /// 基于 SQLite 的本地高速缓存。
 ///
-/// 内部通过 `Mutex<Connection>` 保证多线程安全。
-/// 生产环境可替换为连接池 (r2d2 / deadpool)。
+/// 内部通过 `Arc<Mutex<Connection>>` 保证多线程与跨任务共享的安全。
+#[derive(Clone)]
 pub struct Cache {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Cache {
@@ -107,7 +107,7 @@ impl Cache {
         )?;
         info!("本地缓存数据库已初始化");
         Ok(Cache {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         })
     }
 
@@ -282,6 +282,33 @@ impl Cache {
             }
         };
         Ok(count)
+    }
+
+    /// 获取所有大于指定 ID 的消息（用于 P2P 增量同步）。
+    pub fn list_all_messages_since(
+        &self,
+        since_id: i64,
+        limit: i64,
+    ) -> Result<Vec<CachedMessage>, CacheError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, msg_type, public_key, timestamp, bencode_data, created_at
+             FROM messages
+             WHERE id > ?1
+             ORDER BY id ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![since_id, limit], |row| {
+            Ok(CachedMessage {
+                id: row.get(0)?,
+                msg_type: row.get(1)?,
+                public_key: row.get(2)?,
+                timestamp: row.get(3)?,
+                bencode_data: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }
 

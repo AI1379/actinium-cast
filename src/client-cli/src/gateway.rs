@@ -36,13 +36,22 @@ impl GatewayClient {
         Ok((status, body))
     }
 
-    /// 发送 POST /api/publish/* 请求。
-    pub fn publish(&self, path: &str, envelope_hex: &str) -> Result<(u16, Value), String> {
+    /// 发送 POST /api/publish/* 请求，附带 BEP 44 签名。
+    pub fn publish(
+        &self,
+        path: &str,
+        envelope_hex: &str,
+        bep44_sig_hex: Option<&str>,
+    ) -> Result<(u16, Value), String> {
         let url = format!("{}{}", self.base_url, path);
+        let mut body = serde_json::json!({ "envelope_hex": envelope_hex });
+        if let Some(sig) = bep44_sig_hex {
+            body["bep44_sig_hex"] = serde_json::Value::String(sig.to_string());
+        }
         let resp = self
             .client
             .post(&url)
-            .json(&serde_json::json!({ "envelope_hex": envelope_hex }))
+            .json(&body)
             .send()
             .map_err(|e| format!("POST {url} 连接失败 (网关是否已启动?): {e}"))?;
         let status = resp.status().as_u16();
@@ -54,3 +63,4 @@ impl GatewayClient {
         Ok((status, body))
     }
 }
+
