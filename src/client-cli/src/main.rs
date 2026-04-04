@@ -21,6 +21,9 @@
 //! # 发布帖子
 //! cargo run -p client-cli -- post --title "Hello" --content "World"
 //!
+//! # 使用自定义网络 ID 发帖
+//! cargo run -p client-cli -- --network-id <hex> post --title "Hello" --content "World"
+//!
 //! # 端对端冒烟测试
 //! cargo run -p client-cli -- smoke-test
 //! ```
@@ -32,7 +35,7 @@ use clap::{Parser, Subcommand};
 
 use crate::envelope::EnvelopeBuilder;
 use crate::gateway::GatewayClient;
-use actinium_core::Identity;
+use actinium_core::{Identity, NETWORK_ID_LEN};
 
 // ─── CLI 定义 ────────────────────────────────────────────────────────────────
 
@@ -51,6 +54,11 @@ struct Cli {
     /// PoW 难度（bit 前导零数量，默认 8）
     #[arg(long, default_value_t = 8, global = true)]
     difficulty: u8,
+
+    /// 网络标识符（64 个 hex 字符 = 32 字节）。
+    /// 未指定时使用默认的开发网络 ID。
+    #[arg(long, global = true)]
+    network_id: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -145,12 +153,54 @@ enum IdentityAction {
     Generate,
 }
 
+// ─── 网络 ID 解析 ────────────────────────────────────────────────────────────
+
+/// 解析 network_id：优先使用 CLI 参数，其次环境变量，最后使用默认开发网络 ID。
+fn resolve_network_id(cli_value: Option<&str>) -> [u8; NETWORK_ID_LEN] {
+    // 1. CLI 参数
+    if let Some(hex_str) = cli_value {
+        return parse_network_id_hex(hex_str);
+    }
+
+    // 2. 环境变量
+    if let Ok(hex_str) = std::env::var("ACTINIUM_NETWORK_ID") {
+        return parse_network_id_hex(hex_str.trim());
+    }
+
+    // 3. 默认开发网络 ID（与 gateway 使用相同的种子）
+    use sha2::{Sha256, Digest};
+    let hash = Sha256::digest(b"actinium-cast-dev-network-v1");
+    let mut arr = [0u8; NETWORK_ID_LEN];
+    arr.copy_from_slice(&hash);
+    arr
+}
+
+fn parse_network_id_hex(hex_str: &str) -> [u8; NETWORK_ID_LEN] {
+    let bytes = hex::decode(hex_str).unwrap_or_else(|e| {
+        eprintln!("❌ network_id hex 解码失败: {e}");
+        eprintln!("   期望 {} 个 hex 字符 (= {} 字节)", NETWORK_ID_LEN * 2, NETWORK_ID_LEN);
+        std::process::exit(1);
+    });
+    if bytes.len() != NETWORK_ID_LEN {
+        eprintln!(
+            "❌ network_id 长度错误: 期望 {} 字节, 实际 {} 字节",
+            NETWORK_ID_LEN,
+            bytes.len()
+        );
+        std::process::exit(1);
+    }
+    let mut arr = [0u8; NETWORK_ID_LEN];
+    arr.copy_from_slice(&bytes);
+    arr
+}
+
 // ─── 入口 ────────────────────────────────────────────────────────────────────
 
 fn main() {
     let cli = Cli::parse();
     let gw = GatewayClient::new(&cli.gateway);
     let difficulty = cli.difficulty;
+    let network_id = resolve_network_id(cli.network_id.as_deref());
 
     match cli.command {
         Command::Status => cmd_status(&gw),
@@ -161,21 +211,21 @@ fn main() {
             title,
             content,
             secret_key,
-        } => cmd_post(&gw, difficulty, &title, &content, secret_key.as_deref()),
+        } => cmd_post(&gw, difficulty, &title, &content, secret_key.as_deref(), &network_id),
         Command::Comment {
             post_id,
             content,
             secret_key,
-        } => cmd_comment(&gw, difficulty, &post_id, &content, secret_key.as_deref()),
+        } => cmd_comment(&gw, difficulty, &post_id, &content, secret_key.as_deref(), &network_id),
         Command::Vote {
             target_id,
             positive,
             secret_key,
-        } => cmd_vote(&gw, difficulty, &target_id, positive, secret_key.as_deref()),
+        } => cmd_vote(&gw, difficulty, &target_id, positive, secret_key.as_deref(), &network_id),
         Command::ListPosts { limit, offset } => cmd_list_posts(&gw, limit, offset),
         Command::GetPost { id } => cmd_get_post(&gw, id),
         Command::GetVotes { target_id } => cmd_get_votes(&gw, &target_id),
-        Command::SmokeTest => cmd_smoke_test(&gw, difficulty),
+        Command::SmokeTest => cmd_smoke_test(&gw, difficulty, &network_id),
     }
 }
 
@@ -224,10 +274,10 @@ fn resolve_identity(secret_key: Option<&str>) -> Identity {
     }
 }
 
-fn cmd_post(gw: &GatewayClient, difficulty: u8, title: &str, content: &str, secret_key: Option<&str>) {
+fn cmd_post(gw: &GatewayClient, difficulty: u8, title: &str, content: &str, secret_key: Option<&str>, network_id: &[u8; NETWORK_ID_LEN]) {
     let identity = resolve_identity(secret_key);
     println!("⛏️  正在计算 PoW (difficulty={difficulty})...");
-    let hex = EnvelopeBuilder::build_post(&identity, title, content, difficulty);
+    let hex = EnvelopeBuilder::build_post(&identity, title, content, difficulty, network_id);
     println!("📤 正在发布帖子...");
     match gw.publish("/api/publish/post", &hex) {
         Ok((status, body)) => {
@@ -241,10 +291,10 @@ fn cmd_post(gw: &GatewayClient, difficulty: u8, title: &str, content: &str, secr
     }
 }
 
-fn cmd_comment(gw: &GatewayClient, difficulty: u8, post_id: &str, content: &str, secret_key: Option<&str>) {
+fn cmd_comment(gw: &GatewayClient, difficulty: u8, post_id: &str, content: &str, secret_key: Option<&str>, network_id: &[u8; NETWORK_ID_LEN]) {
     let identity = resolve_identity(secret_key);
     println!("⛏️  正在计算 PoW (difficulty={difficulty})...");
-    let hex = EnvelopeBuilder::build_comment(&identity, post_id, content, difficulty);
+    let hex = EnvelopeBuilder::build_comment(&identity, post_id, content, difficulty, network_id);
     println!("📤 正在发布评论...");
     match gw.publish("/api/publish/comment", &hex) {
         Ok((status, body)) => {
@@ -258,11 +308,11 @@ fn cmd_comment(gw: &GatewayClient, difficulty: u8, post_id: &str, content: &str,
     }
 }
 
-fn cmd_vote(gw: &GatewayClient, difficulty: u8, target_id: &str, positive: bool, secret_key: Option<&str>) {
+fn cmd_vote(gw: &GatewayClient, difficulty: u8, target_id: &str, positive: bool, secret_key: Option<&str>, network_id: &[u8; NETWORK_ID_LEN]) {
     let identity = resolve_identity(secret_key);
     let label = if positive { "👍 点赞" } else { "👎 取消点赞" };
     println!("⛏️  正在计算 PoW (difficulty={difficulty})...");
-    let hex = EnvelopeBuilder::build_vote(&identity, target_id, positive, difficulty);
+    let hex = EnvelopeBuilder::build_vote(&identity, target_id, positive, difficulty, network_id);
     println!("📤 正在发布{label}...");
     match gw.publish("/api/publish/vote", &hex) {
         Ok((status, body)) => {
@@ -335,10 +385,12 @@ fn cmd_get_votes(gw: &GatewayClient, target_id: &str) {
 
 // ─── 冒烟测试 ────────────────────────────────────────────────────────────────
 
-fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8) {
+fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8, network_id: &[u8; NETWORK_ID_LEN]) {
     println!("\n{}", "═".repeat(60));
     println!("  Actinium Cast 端对端冒烟测试");
     println!("{}\n", "═".repeat(60));
+
+    println!("🔗 网络 ID: {}", hex::encode(network_id));
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -386,6 +438,7 @@ fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8) {
         "冒烟测试帖子",
         "这是 Actinium Cast 的端对端冒烟测试 🎉",
         difficulty,
+        network_id,
     );
     let (status, body) = gw.publish("/api/publish/post", &post_hex)
         .expect("发布帖子请求失败");
@@ -416,7 +469,7 @@ fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8) {
     // ── 5. Bob 发布评论 ──
     println!("\n💬 步骤 5: Bob 发布评论...");
     let comment_hex = EnvelopeBuilder::build_comment(
-        &bob, &alice_pk, "非常棒的帖子！", difficulty,
+        &bob, &alice_pk, "非常棒的帖子！", difficulty, network_id,
     );
     let (status, body) = gw.publish("/api/publish/comment", &comment_hex)
         .expect("发布评论失败");
@@ -424,7 +477,7 @@ fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8) {
 
     // ── 6. Bob 对 Alice 的帖子点赞 ──
     println!("\n👍 步骤 6: Bob 点赞...");
-    let vote_hex = EnvelopeBuilder::build_vote(&bob, &alice_pk, true, difficulty);
+    let vote_hex = EnvelopeBuilder::build_vote(&bob, &alice_pk, true, difficulty, network_id);
     let (status, body) = gw.publish("/api/publish/vote", &vote_hex)
         .expect("发布投票失败");
     check!("投票发布成功", status == 200 && body["ok"] == true);
@@ -455,7 +508,7 @@ fn cmd_smoke_test(gw: &GatewayClient, difficulty: u8) {
 
     // 8c. 篡改数据
     let mut tampered = EnvelopeBuilder::build_post(
-        &alice, "篡改测试", "这条消息会被篡改", difficulty,
+        &alice, "篡改测试", "这条消息会被篡改", difficulty, network_id,
     );
     let len = tampered.len();
     let last = u8::from_str_radix(&tampered[len - 2..], 16).unwrap_or(0);

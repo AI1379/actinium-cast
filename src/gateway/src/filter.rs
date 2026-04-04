@@ -6,7 +6,7 @@
 //!
 //! 通过验证的数据才会被写入本地缓存或返回给客户端。
 
-use actinium_core::{PowChallenge, SignedEnvelope, verify_signature};
+use actinium_core::{PowChallenge, SignedEnvelope, NETWORK_ID_LEN, verify_signature};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -15,6 +15,9 @@ use tracing::{debug, warn};
 
 #[derive(Debug, Error)]
 pub enum FilterError {
+    #[error("网络不匹配：消息属于其他网络 (expected={expected}, actual={actual})")]
+    WrongNetwork { expected: String, actual: String },
+
     #[error("PoW 难度不足：要求 >= {required}，实际 {actual}")]
     InsufficientDifficulty { required: u8, actual: u8 },
 
@@ -36,6 +39,9 @@ pub enum FilterError {
 /// 网关过滤器的运行时配置。
 #[derive(Debug, Clone)]
 pub struct FilterConfig {
+    /// 本网关所属的网络标识符（32 字节）。
+    /// 仅接受携带相同 network_id 的消息。
+    pub network_id: [u8; NETWORK_ID_LEN],
     /// 最低 PoW 难度（bit 前导零数量），低于此值的消息将被丢弃。
     pub min_difficulty: u8,
     /// 最大允许的时间戳偏移量（秒）。
@@ -43,12 +49,19 @@ pub struct FilterConfig {
     pub max_timestamp_drift_secs: i64,
 }
 
-impl Default for FilterConfig {
-    fn default() -> Self {
+impl FilterConfig {
+    /// 使用指定的 network_id 创建默认配置。
+    pub fn with_network_id(network_id: [u8; NETWORK_ID_LEN]) -> Self {
         FilterConfig {
+            network_id,
             min_difficulty: 8,            // 至少 1 字节前导零
             max_timestamp_drift_secs: 600, // ±10 分钟
         }
+    }
+
+    /// 获取 network_id 的 hex 表示。
+    pub fn network_id_hex(&self) -> String {
+        hex::encode(self.network_id)
     }
 }
 
@@ -57,6 +70,7 @@ impl Default for FilterConfig {
 /// 对一个 `SignedEnvelope` 执行完整的防垃圾验证。
 ///
 /// 验证顺序：
+/// 0. 检查 network_id 是否匹配本网关（最先执行，最廉价）。
 /// 1. 检查 PoW 难度是否达标。
 /// 2. 检查 PoW nonce + hash 与 prefix 是否一致。
 /// 3. 检查时间戳偏移是否在合理范围。
@@ -66,6 +80,20 @@ pub fn validate_envelope<T: Serialize + DeserializeOwned>(
     config: &FilterConfig,
     reported_difficulty: u8,
 ) -> Result<(), FilterError> {
+    // ── 0. 网络隔离检查 ──
+    if envelope.network_id.len() != NETWORK_ID_LEN || envelope.network_id_array() != config.network_id {
+        warn!(
+            expected = hex::encode(config.network_id),
+            actual = hex::encode(&envelope.network_id),
+            "拒绝：消息属于其他网络"
+        );
+        return Err(FilterError::WrongNetwork {
+            expected: hex::encode(config.network_id),
+            actual: hex::encode(&envelope.network_id),
+        });
+    }
+    debug!("网络 ID 匹配");
+
     // ── 1. 难度门槛 ──
     if reported_difficulty < config.min_difficulty {
         warn!(
@@ -111,6 +139,7 @@ pub fn validate_envelope<T: Serialize + DeserializeOwned>(
     // ── 4. 签名验证 ──
     let signing_bytes =
         SignedEnvelope::<T>::signing_bytes(
+            &envelope.network_id_array(),
             &envelope.payload,
             envelope.timestamp,
             envelope.pow_nonce,
@@ -148,10 +177,24 @@ fn build_pow_prefix<T>(envelope: &SignedEnvelope<T>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actinium_core::{Identity, PowChallenge, Post, SignedEnvelope};
+    use actinium_core::{Identity, PowChallenge, Post, SignedEnvelope, NETWORK_ID_LEN};
+
+    /// 测试用的固定网络 ID。
+    fn test_network_id() -> [u8; NETWORK_ID_LEN] {
+        [0xABu8; NETWORK_ID_LEN]
+    }
+
+    /// 使用指定的 network_id 创建测试用 FilterConfig。
+    fn test_config() -> FilterConfig {
+        FilterConfig::with_network_id(test_network_id())
+    }
 
     /// 辅助函数：构造一个完整、合法的 SignedEnvelope<Post>。
     fn make_valid_post_envelope(difficulty: u8) -> SignedEnvelope<Post> {
+        make_valid_post_envelope_with_network(difficulty, test_network_id())
+    }
+
+    fn make_valid_post_envelope_with_network(difficulty: u8, network_id: [u8; NETWORK_ID_LEN]) -> SignedEnvelope<Post> {
         let identity = Identity::generate();
         let timestamp = chrono::Utc::now().timestamp();
         let post = Post {
@@ -167,8 +210,9 @@ mod tests {
         let challenge = PowChallenge::new(pow_prefix, difficulty);
         let solution = challenge.solve().expect("PoW solve should succeed");
 
-        // 签名
+        // 签名（包含 network_id）
         let signing_bytes = SignedEnvelope::<Post>::signing_bytes(
+            &network_id,
             &post,
             timestamp,
             solution.nonce,
@@ -178,6 +222,7 @@ mod tests {
         let sig = identity.sign(&signing_bytes);
 
         SignedEnvelope::new(
+            network_id,
             post,
             timestamp,
             solution.nonce,
@@ -190,8 +235,17 @@ mod tests {
     #[test]
     fn test_valid_envelope_passes() {
         let envelope = make_valid_post_envelope(8);
-        let config = FilterConfig::default();
+        let config = test_config();
         assert!(validate_envelope(&envelope, &config, 8).is_ok());
+    }
+
+    #[test]
+    fn test_wrong_network_rejected() {
+        let other_network = [0xCDu8; NETWORK_ID_LEN];
+        let envelope = make_valid_post_envelope_with_network(8, other_network);
+        let config = test_config(); // expects test_network_id()
+        let result = validate_envelope(&envelope, &config, 8);
+        assert!(matches!(result, Err(FilterError::WrongNetwork { .. })));
     }
 
     #[test]
@@ -199,7 +253,7 @@ mod tests {
         let envelope = make_valid_post_envelope(4);
         let config = FilterConfig {
             min_difficulty: 8,
-            ..Default::default()
+            ..test_config()
         };
         // reported difficulty = 4，低于 min_difficulty = 8
         let result = validate_envelope(&envelope, &config, 4);
@@ -213,7 +267,7 @@ mod tests {
         let last = envelope.signature.len() - 1;
         envelope.signature[last] ^= 0xFF;
 
-        let config = FilterConfig::default();
+        let config = test_config();
         let result = validate_envelope(&envelope, &config, 8);
         assert!(matches!(result, Err(FilterError::InvalidSignature)));
     }
@@ -224,7 +278,7 @@ mod tests {
         // 篡改 PoW nonce
         envelope.pow_nonce = envelope.pow_nonce.wrapping_add(1);
 
-        let config = FilterConfig::default();
+        let config = test_config();
         let result = validate_envelope(&envelope, &config, 8);
         assert!(matches!(result, Err(FilterError::InvalidPow)));
     }

@@ -4,9 +4,9 @@
 //!
 //! 所有消息均通过 [`SignedEnvelope`] 包裹，确保：
 //! ```text
-//! [payload, timestamp, pow_nonce, pow_hash, public_key, signature]
+//! [network_id, payload, timestamp, pow_nonce, pow_hash, public_key, signature]
 //! ```
-//! 签名目标 = `bencode(payload) || timestamp_le || pow_nonce_le || public_key`
+//! 签名目标 = `network_id || bencode(payload) || timestamp_le || pow_nonce_le || public_key`
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -18,6 +18,9 @@ pub enum ModelError {
     #[error("bencode 序列化失败: {0}")]
     Encode(#[from] serde_bencode::Error),
 }
+
+/// 网络标识符长度（32 字节 = SHA-256 哈希）。
+pub const NETWORK_ID_LEN: usize = 32;
 
 // ─── 业务载荷类型 ─────────────────────────────────────────────────────────────
 
@@ -74,6 +77,8 @@ impl Vote {
     deserialize = "T: DeserializeOwned"
 ))]
 pub struct SignedEnvelope<T> {
+    /// 网络标识符（32 字节），用于隔离不同网络实例的消息。
+    pub network_id: Vec<u8>,
     /// 业务载荷（Post / Comment / Vote）。
     pub payload: T,
     /// Unix 时间戳（秒），防止重放攻击。
@@ -91,6 +96,7 @@ pub struct SignedEnvelope<T> {
 impl<T: Serialize + DeserializeOwned> SignedEnvelope<T> {
     /// 从原始字节数组构造信封（类型安全的构造器）。
     pub fn new(
+        network_id: [u8; NETWORK_ID_LEN],
         payload: T,
         timestamp: i64,
         pow_nonce: u64,
@@ -99,6 +105,7 @@ impl<T: Serialize + DeserializeOwned> SignedEnvelope<T> {
         signature: [u8; 64],
     ) -> Self {
         SignedEnvelope {
+            network_id: network_id.to_vec(),
             payload,
             timestamp,
             pow_nonce,
@@ -106,6 +113,14 @@ impl<T: Serialize + DeserializeOwned> SignedEnvelope<T> {
             public_key: public_key.to_vec(),
             signature: signature.to_vec(),
         }
+    }
+
+    /// 获取网络标识符的固定长度数组形式。
+    ///
+    /// # Panics
+    /// 若 `network_id` 字段长度不为 32 字节则 panic（数据格式破坏）。
+    pub fn network_id_array(&self) -> [u8; NETWORK_ID_LEN] {
+        self.network_id.as_slice().try_into().expect("network_id must be 32 bytes")
     }
 
     /// 获取 PoW 哈希的固定长度数组形式。
@@ -138,14 +153,19 @@ impl<T: Serialize + DeserializeOwned> SignedEnvelope<T> {
 
     /// 生成签名目标字节（签名时和验证时使用相同的字节序列）。
     ///
-    /// 格式：`bencode(payload) || timestamp_le8 || pow_nonce_le8 || public_key`
+    /// 格式：`network_id || bencode(payload) || timestamp_le8 || pow_nonce_le8 || public_key`
+    ///
+    /// `network_id` 被纳入签名范围，防止跨网络消息伪造。
     pub fn signing_bytes(
+        network_id: &[u8; NETWORK_ID_LEN],
         payload: &T,
         timestamp: i64,
         pow_nonce: u64,
         public_key: &[u8; 32],
     ) -> Result<Vec<u8>, ModelError> {
-        let mut bytes = serde_bencode::to_bytes(payload)?;
+        let mut bytes = Vec::with_capacity(NETWORK_ID_LEN + 128);
+        bytes.extend_from_slice(network_id);
+        bytes.extend_from_slice(&serde_bencode::to_bytes(payload)?);
         bytes.extend_from_slice(&timestamp.to_le_bytes());
         bytes.extend_from_slice(&pow_nonce.to_le_bytes());
         bytes.extend_from_slice(public_key);
@@ -159,6 +179,9 @@ impl<T: Serialize + DeserializeOwned> SignedEnvelope<T> {
 mod tests {
     use super::*;
 
+    fn dummy_network_id() -> [u8; NETWORK_ID_LEN] {
+        [0x11u8; NETWORK_ID_LEN]
+    }
     fn dummy_hash() -> [u8; 32] {
         [0xAAu8; 32]
     }
@@ -171,6 +194,7 @@ mod tests {
 
     fn make_post_envelope() -> SignedEnvelope<Post> {
         SignedEnvelope::new(
+            dummy_network_id(),
             Post {
                 title: "Hello World".to_string(),
                 content: "Actinium is decentralized.".to_string(),
@@ -198,6 +222,7 @@ mod tests {
     #[test]
     fn test_comment_envelope_roundtrip() {
         let envelope = SignedEnvelope::new(
+            dummy_network_id(),
             Comment {
                 post_id: "abcdef1234".to_string(),
                 content: "Great post!".to_string(),
@@ -218,6 +243,7 @@ mod tests {
     #[test]
     fn test_vote_envelope_roundtrip() {
         let envelope = SignedEnvelope::new(
+            dummy_network_id(),
             Vote {
                 target_id: "deadbeef".to_string(),
                 positive: 1u8,  // 1 = like
@@ -239,6 +265,7 @@ mod tests {
     #[test]
     fn test_array_accessors() {
         let env = make_post_envelope();
+        assert_eq!(env.network_id_array(), dummy_network_id());
         assert_eq!(env.pow_hash_array(), dummy_hash());
         assert_eq!(env.public_key_array(), dummy_pubkey());
         assert_eq!(env.signature_array(), dummy_sig());
@@ -252,13 +279,34 @@ mod tests {
             content: "Same input same output".to_string(),
             difficulty: 8,
         };
+        let nid = dummy_network_id();
         let pk = dummy_pubkey();
         let ts = 1_700_000_000i64;
         let nonce = 12345u64;
 
-        let b1 = SignedEnvelope::<Post>::signing_bytes(&post, ts, nonce, &pk).unwrap();
-        let b2 = SignedEnvelope::<Post>::signing_bytes(&post, ts, nonce, &pk).unwrap();
+        let b1 = SignedEnvelope::<Post>::signing_bytes(&nid, &post, ts, nonce, &pk).unwrap();
+        let b2 = SignedEnvelope::<Post>::signing_bytes(&nid, &post, ts, nonce, &pk).unwrap();
         assert_eq!(b1, b2);
         assert!(!b1.is_empty());
+    }
+
+    /// 不同 network_id 产生不同的签名字节。
+    #[test]
+    fn test_signing_bytes_differ_per_network() {
+        let post = Post {
+            title: "Cross-network".to_string(),
+            content: "Must be different".to_string(),
+            difficulty: 8,
+        };
+        let pk = dummy_pubkey();
+        let ts = 1_700_000_000i64;
+        let nonce = 42u64;
+
+        let nid_a = [0x11u8; NETWORK_ID_LEN];
+        let nid_b = [0x22u8; NETWORK_ID_LEN];
+
+        let bytes_a = SignedEnvelope::<Post>::signing_bytes(&nid_a, &post, ts, nonce, &pk).unwrap();
+        let bytes_b = SignedEnvelope::<Post>::signing_bytes(&nid_b, &post, ts, nonce, &pk).unwrap();
+        assert_ne!(bytes_a, bytes_b);
     }
 }

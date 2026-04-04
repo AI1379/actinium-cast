@@ -114,6 +114,7 @@ pub struct VoteStats {
 /// 网关状态信息。
 #[derive(Debug, Serialize)]
 pub struct GatewayStatus {
+    pub network_id: String,
     pub total_posts: i64,
     pub total_comments: i64,
     pub total_votes: i64,
@@ -306,6 +307,7 @@ async fn status(State(state): State<SharedState>) -> impl IntoResponse {
     let total_votes = state.cache.count(Some(MessageType::Vote)).unwrap_or(0);
 
     Json(ApiResponse::success(GatewayStatus {
+        network_id: state.filter_config.network_id_hex(),
         total_posts,
         total_comments,
         total_votes,

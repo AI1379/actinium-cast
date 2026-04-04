@@ -14,5 +14,5 @@ pub mod pow;
 
 // 便捷的顶层 re-export
 pub use identity::{Identity, IdentityError, verify_signature};
-pub use models::{Comment, ModelError, Post, SignedEnvelope, Vote};
+pub use models::{Comment, ModelError, Post, SignedEnvelope, Vote, NETWORK_ID_LEN};
 pub use pow::{PowChallenge, PowError, PowSolution};

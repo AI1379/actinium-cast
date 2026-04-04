@@ -4,7 +4,7 @@
 //! PoW 计算 → 签名 → bencode 编码 → hex 编码
 
 use actinium_core::{
-    Comment, Identity, Post, PowChallenge, SignedEnvelope, Vote,
+    Comment, Identity, Post, PowChallenge, SignedEnvelope, Vote, NETWORK_ID_LEN,
 };
 
 /// 提供各种消息类型 SignedEnvelope 的构建方法。
@@ -17,6 +17,7 @@ impl EnvelopeBuilder {
         title: &str,
         content: &str,
         difficulty: u8,
+        network_id: &[u8; NETWORK_ID_LEN],
     ) -> String {
         let timestamp = chrono::Utc::now().timestamp();
         let post = Post {
@@ -25,7 +26,7 @@ impl EnvelopeBuilder {
             difficulty,
         };
 
-        let envelope = Self::sign_envelope(identity, post, timestamp, difficulty);
+        let envelope = Self::sign_envelope(identity, post, timestamp, difficulty, network_id);
         hex::encode(envelope.to_bencode().expect("bencode 序列化失败"))
     }
 
@@ -35,6 +36,7 @@ impl EnvelopeBuilder {
         post_id: &str,
         content: &str,
         difficulty: u8,
+        network_id: &[u8; NETWORK_ID_LEN],
     ) -> String {
         let timestamp = chrono::Utc::now().timestamp();
         let comment = Comment {
@@ -42,7 +44,7 @@ impl EnvelopeBuilder {
             content: content.to_string(),
         };
 
-        let envelope = Self::sign_envelope(identity, comment, timestamp, difficulty);
+        let envelope = Self::sign_envelope(identity, comment, timestamp, difficulty, network_id);
         hex::encode(envelope.to_bencode().expect("bencode 序列化失败"))
     }
 
@@ -52,6 +54,7 @@ impl EnvelopeBuilder {
         target_id: &str,
         positive: bool,
         difficulty: u8,
+        network_id: &[u8; NETWORK_ID_LEN],
     ) -> String {
         let timestamp = chrono::Utc::now().timestamp();
         let vote = Vote {
@@ -59,7 +62,7 @@ impl EnvelopeBuilder {
             positive: if positive { 1u8 } else { 0u8 },
         };
 
-        let envelope = Self::sign_envelope(identity, vote, timestamp, difficulty);
+        let envelope = Self::sign_envelope(identity, vote, timestamp, difficulty, network_id);
         hex::encode(envelope.to_bencode().expect("bencode 序列化失败"))
     }
 
@@ -71,6 +74,7 @@ impl EnvelopeBuilder {
         payload: T,
         timestamp: i64,
         difficulty: u8,
+        network_id: &[u8; NETWORK_ID_LEN],
     ) -> SignedEnvelope<T>
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Clone,
@@ -83,8 +87,9 @@ impl EnvelopeBuilder {
         let challenge = PowChallenge::new(pow_prefix, difficulty);
         let solution = challenge.solve().expect("PoW 求解失败");
 
-        // 2. 签名
+        // 2. 签名（包含 network_id）
         let signing_bytes = SignedEnvelope::<T>::signing_bytes(
+            network_id,
             &payload,
             timestamp,
             solution.nonce,
@@ -95,6 +100,7 @@ impl EnvelopeBuilder {
 
         // 3. 组装
         SignedEnvelope::new(
+            *network_id,
             payload,
             timestamp,
             solution.nonce,
