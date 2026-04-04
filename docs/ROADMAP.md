@@ -6,8 +6,8 @@
 
 ## 📌 节点总览与状态
 
-- [ ] **Phase 1: 核心密码学与基础组件 (Core)**
-- [ ] **Phase 2: P2P 桥接与网关服务 (Gateway)**
+- [x] **Phase 1: 核心密码学与基础组件 (Core)**
+- [ ] **Phase 2: P2P 桥接与网关服务 (Gateway)** — 核心功能已完成，待生产瘕化
 - [ ] **Phase 3: 客户端与 WebAssembly 执行层 (Client & Wasm)**
 - [ ] **Phase 4: 链上多签与全局控制层 (Blockchain)**
 - [ ] **Phase 5: 综合前端与网关索引服务 (Frontend & Assembly)**
@@ -20,16 +20,16 @@
 
 本阶段构建项目的信任根基与抗垃圾手段，全部为纯 Rust API。
 
-- [ ] **1.1 身份管理 (Identity)**
-  - [ ] 实现 Ed25519 密钥对生成、导出与加载。
-  - [ ] 封装针对任意消息的私钥签名、公钥验证接口。
-- [ ] **1.2 客户端 Proof-of-Work (PoW)**
-  - [ ] 设计基于 SHA-256 的 Hashcash 算法，支持动态难度。
-  - [ ] 实现 CPU 满载 PoW 计算器。
-  - [ ] 实现 PoW 结果的高效验证（网关和客户端用）。
-- [ ] **1.3 数据结构化设计 (Data Models)**
-  - [ ] 依照 BEP 44 设计「帖子 (Post)」、「评论 (Comment)」、「交互消息 (Vote/Like/Unlike)」的序列化/反序列化（例如使用 `serde_bencode`）。
-  - [ ] 确保每条打包好的消息包含：`[内容, 时间戳, PoW解, 用户身份公钥, 签名]`。
+- [x] **1.1 身份管理 (Identity)**
+  - [x] 实现 Ed25519 密钥对生成、导出与加载。
+  - [x] 封装针对任意消息的私钥签名、公钥验证接口。
+- [x] **1.2 客户端 Proof-of-Work (PoW)**
+  - [x] 设计基于 SHA-256 的 Hashcash 算法，支持动态难度。
+  - [x] 实现 CPU 满载 PoW 计算器。
+  - [x] 实现 PoW 结果的高效验证（网关和客户端用）。
+- [x] **1.3 数据结构化设计 (Data Models)**
+  - [x] 依照 BEP 44 设计「帖子 (Post)」、「评论 (Comment)」、「交互消息 (Vote/Like/Unlike)」的序列化/反序列化（例如使用 `serde_bencode`）。
+  - [x] 确保每条打包好的消息包含：`[内容, 时间戳, PoW解, 用户身份公钥, 签名]`。
 
 ---
 
@@ -37,15 +37,15 @@
 
 网关负责对接 DHT 生态，拉取、过滤、缓存并广播数据。
 
-- [ ] **2.1 DHT 网络适配与 BEP 44 寻址**
-  - [ ] 接入并测试可在 Rust 环境运行的 BitTorrent DHT 协议客户端。
-  - [ ] 实现 BEP 44 的 Mutable Data `get` 和 `put` 操作。
-- [ ] **2.2 数据中继及过滤 (Relay & Filter)**
-  - [ ] 建立网关的本地临时高速缓存（如 SQLite / Sled），用于存储常用帖子的摘要，减少频繁直接查询 DHT 的开销。
-  - [ ] **防垃圾垃圾过滤器**：从 DHT 发现新数据后，第一步校验 PoW 和签名签名，剔除无效数据。
-- [ ] **2.3 RESTful / WebSocket API 开发**
-  - [ ] 开放 HTTP 接口，允许外端查询：`获取列表 / 查看单帖 / 评论聚合`。
-  - [ ] 开放 POST 接口，由 Gateway 将外来的签名包推给全球 DHT。
+- [x] **2.1 DHT 网络适配与 BEP 44 寻址**
+  - [x] 接入并测试可在 Rust 环境运行的 BitTorrent DHT 协议客户端。
+  - [x] 实现 BEP 44 的 Mutable Data `get` 和 `put` 操作。
+- [x] **2.2 数据中继及过滤 (Relay & Filter)**
+  - [x] 建立网关的本地临时高速缓存（如 SQLite / Sled），用于存储常用帖子的摘要，减少频繁直接查询 DHT 的开销。
+  - [x] **防垃圾垃圾过滤器**：从 DHT 发现新数据后，第一步校验 PoW 和签名签名，剔除无效数据。
+- [x] **2.3 RESTful / WebSocket API 开发**
+  - [x] 开放 HTTP 接口，允许外端查询：`获取列表 / 查看单帖 / 评论聚合`。
+  - [x] 开放 POST 接口，由 Gateway 将外来的签名包推给全球 DHT。
 
 ---
 
